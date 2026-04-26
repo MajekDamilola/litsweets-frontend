@@ -6,10 +6,10 @@ const CONTRACT_ADDRESS = '0x96c48360431Ed2676D33D944D06a38d0B5d544C8'
 
 const LITVM_CHAIN = {
   chainId: '0x115D',
-  chainName: 'LitVM LiteForge',
+  chainName: 'LitVM',
   nativeCurrency: { name: 'zkLTC', symbol: 'zkLTC', decimals: 18 },
-  rpcUrls: ['https://rpc.liteforge.litvm.io'],
-  blockExplorerUrls: ['https://explorer.liteforge.litvm.io'],
+  rpcUrls: ['https://rpc.litvm.io'],
+  blockExplorerUrls: ['https://explorer.litvm.io'],
 }
 
 const ABI = [
@@ -19,10 +19,6 @@ const ABI = [
   'function getSession(address player) external view returns (tuple(bool active, uint8 difficulty, uint8 livesRemaining, uint256 sessionFee, uint256 startTime))',
   'function getPersonalBest(address player, uint8 difficulty) external view returns (uint256)',
   'function getLeaderboard(uint8 difficulty) external view returns (tuple(address player, uint256 score, uint256 timestamp)[])',
-  'event SessionStarted(address indexed player, uint8 difficulty, uint256 fee)',
-  'event LiveUsed(address indexed player, uint8 livesRemaining)',
-  'event ScoreSubmitted(address indexed player, uint8 difficulty, uint256 score, bool isPersonalBest)',
-  'event LeaderboardUpdated(address indexed player, uint8 difficulty, uint256 score, uint8 position)',
 ]
 
 export const DIFFICULTIES = [
@@ -32,8 +28,14 @@ export const DIFFICULTIES = [
   { id: 3, label: 'Very Hard', emoji: '🔴', fee: '0.7' },
 ]
 
+function getProvider() {
+  // Rabby injects as window.rabby or window.ethereum
+  if (window.rabby) return window.rabby
+  if (window.ethereum) return window.ethereum
+  return null
+}
+
 export function useContract() {
-  const [provider, setProvider] = useState(null)
   const [signer, setSigner] = useState(null)
   const [contract, setContract] = useState(null)
   const [account, setAccount] = useState(null)
@@ -44,25 +46,34 @@ export function useContract() {
   const isCorrectChain = chainId === LITVM_CHAIN_ID
 
   const connectWallet = useCallback(async () => {
-    if (!window.ethereum) { setError('MetaMask not found. Please install it.'); return }
+    const provider = getProvider()
+    if (!provider) { setError('No wallet found. Please install Rabby or MetaMask.'); return }
     setLoading(true); setError(null)
     try {
-      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' })
-      const web3Provider = new ethers.BrowserProvider(window.ethereum)
+      const accounts = await provider.request({ method: 'eth_requestAccounts' })
+      const web3Provider = new ethers.BrowserProvider(provider)
       const web3Signer = await web3Provider.getSigner()
       const network = await web3Provider.getNetwork()
-      setProvider(web3Provider); setSigner(web3Signer)
-      setAccount(accounts[0]); setChainId(Number(network.chainId))
+      setSigner(web3Signer)
+      setAccount(accounts[0])
+      setChainId(Number(network.chainId))
       setContract(new ethers.Contract(CONTRACT_ADDRESS, ABI, web3Signer))
     } catch (e) { setError(e.message) }
     finally { setLoading(false) }
   }, [])
 
   const switchToLitVM = useCallback(async () => {
+    const provider = getProvider()
+    if (!provider) return
+    setError(null)
     try {
-      await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: LITVM_CHAIN.chainId }] })
+      await provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: LITVM_CHAIN.chainId }] })
     } catch (e) {
-      if (e.code === 4902) await window.ethereum.request({ method: 'wallet_addEthereumChain', params: [LITVM_CHAIN] })
+      if (e.code === 4902 || e.code === -32603) {
+        try {
+          await provider.request({ method: 'wallet_addEthereumChain', params: [LITVM_CHAIN] })
+        } catch (e2) { setError(e2.message) }
+      } else { setError(e.message) }
     }
   }, [])
 
@@ -109,13 +120,16 @@ export function useContract() {
   }, [contract])
 
   useEffect(() => {
-    if (!window.ethereum) return
-    window.ethereum.on('accountsChanged', (accounts) => {
+    const provider = getProvider()
+    if (!provider) return
+    const onAccounts = (accounts) => {
       setAccount(accounts[0] || null)
       if (!accounts[0]) { setSigner(null); setContract(null) }
-    })
-    window.ethereum.on('chainChanged', (id) => setChainId(Number(id)))
-    return () => window.ethereum.removeAllListeners()
+    }
+    const onChain = (id) => setChainId(Number(id))
+    provider.on('accountsChanged', onAccounts)
+    provider.on('chainChanged', onChain)
+    return () => { provider.removeListener('accountsChanged', onAccounts); provider.removeListener('chainChanged', onChain) }
   }, [])
 
   return {
